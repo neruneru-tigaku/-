@@ -1,0 +1,210 @@
+# Benthos
+
+## data analysis
+
+```{r}
+library("tidyverse")
+library("vegan")
+library("ggbiplot")
+library("dplyr")
+
+Benthos.data <- read.csv("20250826benthos_.csv")
+```
+
+```{r}
+# Benthos.dataのsideをfactor型にする
+
+Benthos.data$side <- factor(Benthos.data$side, levels = c("inside", "outside"))
+```
+
+### 底棲生物とsideとの関係
+
+#### 絶対数
+```{r}
+# 生物種名のリスト
+species <- c("Polychaete", "Bivalvia", "Gastropoda", "Amphipoda",
+             "Isopoda", "Cumacea", "Decapoda", "Ophiuroid",
+             "Sipuncula", "Nemertean", "Other")
+
+# 有意な結果を格納するリスト
+significant_results <- list()
+
+for (sp in species) {
+  fit <- aov(formula = as.formula(paste(sp, "~ side")), data = Benthos.data)
+  sm <- summary(fit)[[1]]
+  pval <- sm[["Pr(>F)"]][1]
+  
+  if (!is.na(pval) && pval < 0.05) {
+    significant_results[[sp]] <- list(
+      F_value = sm[["F value"]][1],
+      p_value = pval
+    )
+  }
+}
+
+# 有意な種名だけを文字ベクトルに
+sig_species <- names(significant_results)
+
+# 結果の表示
+if (length(significant_results) > 0) {
+  print("==== 有意差が見られた種 ====")
+  print(significant_results)
+} else {
+  print("有意な差は検出されませんでした。")
+}
+
+# 有意差が見られた種についてのみ箱ひげ図の作成
+
+if(length(sig_species) > 0){
+ for (sp in sig_species) {
+    boxchart <- ggplot(Benthos.data, aes(x = side, y = .data[[sp]], fill = side)) +
+      geom_boxplot(outlier.size = 0)+
+      geom_point()
+    print(boxchart)
+ }
+}
+
+```
+
+#### 相対数
+
+```{r}
+# insideとoutsideでそれぞれの生物の割合を計算しbenthon_ratioに格納
+
+# 生物種名のリスト
+species <- c("Polychaete", "Bivalvia", "Gastropoda", "Amphipoda",
+             "Isopoda", "Cumacea", "Decapoda", "Ophiuroid",
+             "Sipuncula", "Nemertean", "Other")
+
+# 行ごと（観測地点ごと）に合計を求め、割合に変換
+Benthos.prop <- Benthos.data %>%
+  mutate(total = rowSums(across(all_of(species)))) %>%
+  mutate(across(all_of(species), ~ .x / total, .names = "{.col}_prop"))
+
+# 有意な結果を格納するリスト
+significant_results_prop <- list()
+
+for (sp in species) {
+  varname <- paste0(sp, "_prop")
+  fit <- aov(formula = as.formula(paste(varname, "~ side")), data = Benthos.prop)
+  sm <- summary(fit)[[1]]
+  pval <- sm[["Pr(>F)"]][1]
+  
+  if (!is.na(pval) && pval < 0.05) {
+    significant_results_prop[[sp]] <- list(
+      F_value = sm[["F value"]][1],
+      p_value = pval
+    )
+  }
+}
+
+# 有意な種名だけを文字ベクトルに
+sig_species <- names(significant_results_prop)
+
+# 結果の表示
+if (length(significant_results_prop) > 0) {
+  print("==== 割合に基づいて有意差が見られた種 ====")
+  print(significant_results_prop)
+} else {
+  print("有意な差は検出されませんでした。")
+}
+
+# 有意差が見られた種についてのみ箱ひげ図の作成
+
+if(length(sig_species) > 0){
+ for (sp in paste0(sig_species, "_prop")) {
+    boxchart <- ggplot(Benthos.prop, aes(x = side, y = .data[[sp]], fill = side)) +
+      geom_boxplot(outlier.size = 0)+
+      geom_point()
+    print(boxchart)
+ }
+}
+
+```
+
+### PCAやってみる
+
+#### 絶対数
+```{r}
+# 種の列だけ取り出す
+species <- c("Polychaete","Bivalvia","Gastropoda","Amphipoda",
+             "Isopoda","Cumacea","Decapoda","Ophiuroid",
+             "Sipuncula","Nemertean","Other")
+
+X <- Benthos.data[, species, drop = FALSE]
+
+# 0分散列は除外（全部0など）
+keep <- apply(X, 2, function(v) var(v, na.rm = TRUE) > 0)
+X <- X[, keep, drop = FALSE]
+
+# スケール調整（ゼロ多いなら log1p 推奨）
+# X_log <- log1p(X)
+
+# PCA
+benthon.prc <- prcomp(X, center = TRUE, scale. = TRUE)
+
+# biplot（sideで色分け）
+benthon.prc <- ggbiplot(benthon.prc, groups = Benthos.data$side, ellipse = TRUE) +
+  scale_color_discrete(name = "Side") +
+  ggtitle("PCA (Absolute counts, scaled)") +
+  theme_bw()
+
+print(benthon.prc)
+```
+
+#### 相対数
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(ggbiplot)
+
+# 必要なら因子化
+Benthos.data$side <- factor(Benthos.data$side, levels = c("inside","outside"))
+
+species <- c("Polychaete","Bivalvia","Gastropoda","Amphipoda",
+             "Isopoda","Cumacea","Decapoda","Ophiuroid",
+             "Sipuncula","Nemertean","Other")
+
+# 比率データ
+Benthos.prop <- Benthos.data %>%
+  mutate(total = rowSums(across(all_of(species)), na.rm = TRUE),
+         total = ifelse(total == 0, NA, total)) %>%
+  mutate(across(all_of(species), ~ .x / total, .names = "{.col}_prop"))
+
+# PCA用行列：0分散列は除外（NAならFALSE扱い）
+X_prop <- Benthos.prop[, paste0(species, "_prop"), drop = FALSE]
+keep_cols <- sapply(X_prop, function(v) isTRUE(var(v, na.rm = TRUE) > 0))
+X_prop <- X_prop[, keep_cols, drop = FALSE]
+if (!ncol(X_prop)) stop("有効な変数（分散>0）がありません。")
+
+# 欠損のある行を落として groups を同期
+keep_rows <- complete.cases(X_prop)
+X_prop_cc <- X_prop[keep_rows, , drop = FALSE]
+groups    <- droplevels(Benthos.data$side[keep_rows])
+
+# ラベル（関数rownamesをそのまま渡さない！）
+labels_vec <- rownames(Benthos.data)[keep_rows]
+
+# PCA
+pca_prop <- prcomp(X_prop_cc, center = TRUE, scale. = TRUE)
+
+# 各群3点未満なら楕円は描かない
+ok_ellipse <- length(groups) > 0 && min(table(groups)) >= 3
+
+g_prop <- ggbiplot(pca_prop,
+                   groups = groups,
+                   labels = labels_vec,
+                   ellipse = ok_ellipse, circle = FALSE,
+                   var.axes = TRUE) +
+  scale_color_discrete(name = "Side") +
+  ggtitle("PCA (Proportions, scaled)") +
+  theme_bw()
+
+print(g_prop)
+if (!ok_ellipse) message("楕円はスキップ（各群に3点以上必要）: ", paste(names(table(groups)), table(groups), sep="=", collapse=", "))
+
+```
+
+
+## note for presentation
